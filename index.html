@@ -199,17 +199,17 @@ function initAudio(){
   bassNode=ctx.createBiquadFilter();
   trebNode=ctx.createBiquadFilter();
 
-  // Compressor prevents clipping/distortion at extreme volumes
+  // Compressor just prevents speaker blowout — kept loose so boost is actually felt
   compressor=ctx.createDynamicsCompressor();
-  compressor.threshold.value=-20;
-  compressor.knee.value=10;
-  compressor.ratio.value=4;
-  compressor.attack.value=0.003;
-  compressor.release.value=0.15;
+  compressor.threshold.value=-6;   // only kicks in at near-peak
+  compressor.knee.value=20;        // soft knee = smoother
+  compressor.ratio.value=2;        // gentle — doesn't kill the loudness
+  compressor.attack.value=0.1;
+  compressor.release.value=0.3;
 
   bassNode.type='lowshelf';  bassNode.frequency.value=220;  bassNode.gain.value=B;
   trebNode.type='highshelf'; trebNode.frequency.value=3500; trebNode.gain.value=T;
-  gainNode.gain.value=V/100;
+  gainNode.gain.value=calcGain(V);
 
   // Chain: source → gain → bass → treble → compressor → output
   src.connect(gainNode);
@@ -406,12 +406,20 @@ dz.addEventListener('drop',e=>{ e.preventDefault(); dz.classList.remove('over');
 $('pname').addEventListener('keydown',e=>{ if(e.key==='Enter')doSave(); });
 $('modal').addEventListener('click',e=>{ if(e.target===$('modal'))skipSave(); });
 
+// ── GAIN CURVE — exponential so boost is FELT immediately ────────────────────
+// 100% = 1x (normal), 500% = 8x, 1000% = 25x, 5000% = 200x, 10000% = 500x
+function calcGain(pct){
+  if(pct===0) return 0;
+  // exponential: gain = (pct/100)^2.2
+  return Math.pow(pct/100, 2.2);
+}
+
 // ── SLIDERS ───────────────────────────────────────────────────────────────────
 function onV(el){
   V=+el.value;
   el.style.setProperty('--p',((V/10000)*100).toFixed(2)+'%');
   $('vval').innerHTML=V+'<span class="cu">%</span>';
-  if(gainNode) gainNode.gain.value=V/100;
+  if(gainNode) gainNode.gain.value=calcGain(V);
   const x=(V/100).toFixed(1);
   $('xbadge').textContent=x+'×';
   $('xbadge').className=V>5000?'xbadge fire':V>1000?'xbadge hot':'xbadge';
