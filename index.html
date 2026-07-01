@@ -188,36 +188,45 @@ const $=id=>document.getElementById(id);
 const audio=$('audio');
 
 // ── WEB AUDIO CHAIN ───────────────────────────────────────────────────────────
-let ctx=null,gainNode=null,bassNode=null,trebNode=null,compressor=null,chainBuilt=false;
+let ctx=null,gainNodes=[],bassNode=null,trebNode=null,compressor=null,chainBuilt=false;
 let V=100,B=0,T=0;
 
 function initAudio(){
   if(chainBuilt)return;
   ctx=new(window.AudioContext||window.webkitAudioContext)();
   const src=ctx.createMediaElementSource(audio);
-  gainNode=ctx.createGain();
   bassNode=ctx.createBiquadFilter();
   trebNode=ctx.createBiquadFilter();
-
-  // Compressor just prevents speaker blowout — kept loose so boost is actually felt
-  compressor=ctx.createDynamicsCompressor();
-  compressor.threshold.value=-6;   // only kicks in at near-peak
-  compressor.knee.value=20;        // soft knee = smoother
-  compressor.ratio.value=2;        // gentle — doesn't kill the loudness
-  compressor.attack.value=0.1;
-  compressor.release.value=0.3;
-
   bassNode.type='lowshelf';  bassNode.frequency.value=220;  bassNode.gain.value=B;
   trebNode.type='highshelf'; trebNode.frequency.value=3500; trebNode.gain.value=T;
-  gainNode.gain.value=calcGain(V);
-
-  // Chain: source → gain → bass → treble → compressor → output
-  src.connect(gainNode);
-  gainNode.connect(bassNode);
+  // 4 chained gain nodes — each multiplies the previous, breaks browser single-node cap
+  gainNodes=[ctx.createGain(),ctx.createGain(),ctx.createGain(),ctx.createGain()];
+  // Loose compressor — only catches true peaks to protect speakers
+  compressor=ctx.createDynamicsCompressor();
+  compressor.threshold.value=-3;
+  compressor.knee.value=30;
+  compressor.ratio.value=2;
+  compressor.attack.value=0.2;
+  compressor.release.value=0.5;
+  // Chain: src→g0→g1→g2→g3→bass→treble→compressor→out
+  src.connect(gainNodes[0]);
+  gainNodes[0].connect(gainNodes[1]);
+  gainNodes[1].connect(gainNodes[2]);
+  gainNodes[2].connect(gainNodes[3]);
+  gainNodes[3].connect(bassNode);
   bassNode.connect(trebNode);
   trebNode.connect(compressor);
   compressor.connect(ctx.destination);
+  applyGain();
   chainBuilt=true;
+}
+
+function applyGain(){
+  if(!gainNodes.length)return;
+  const total=calcGain(V);
+  // Distribute across 4 nodes: each = total^(1/4)
+  const perNode=Math.pow(Math.max(total,0.0001),0.25);
+  gainNodes.forEach(g=>g.gain.value=perNode);
 }
 
 // ── BLOB URL MANAGER ──────────────────────────────────────────────────────────
@@ -419,7 +428,7 @@ function onV(el){
   V=+el.value;
   el.style.setProperty('--p',((V/10000)*100).toFixed(2)+'%');
   $('vval').innerHTML=V+'<span class="cu">%</span>';
-  if(gainNode) gainNode.gain.value=calcGain(V);
+  applyGain();
   const x=(V/100).toFixed(1);
   $('xbadge').textContent=x+'×';
   $('xbadge').className=V>5000?'xbadge fire':V>1000?'xbadge hot':'xbadge';
