@@ -191,12 +191,13 @@ const audio=$('audio');
 let ctx=null,gainNodes=[],bassNode=null,trebNode=null,compressor=null,chainBuilt=false;
 let V=100,B=0,T=0;
 
-function makeSoftClipCurve(amount){
-  // Soft saturation curve — loud without harsh clipping
-  const n=256, curve=new Float32Array(n);
+function makeLimiterCurve(){
+  // Hard limiter curve — brickwall at 0dB, no distortion below threshold
+  const n=512, curve=new Float32Array(n);
   for(let i=0;i<n;i++){
     const x=(i*2/n)-1;
-    curve[i]= x*(1+amount)/(1+amount*Math.abs(x));
+    // tanh soft limit — smooth saturation, preserves dynamics below peak
+    curve[i]=Math.tanh(x*2)*0.9;
   }
   return curve;
 }
@@ -206,35 +207,55 @@ function initAudio(){
   ctx=new(window.AudioContext||window.webkitAudioContext)();
   const src=ctx.createMediaElementSource(audio);
 
-  bassNode=ctx.createBiquadFilter();
-  trebNode=ctx.createBiquadFilter();
-  bassNode.type='lowshelf';  bassNode.frequency.value=220;  bassNode.gain.value=B;
-  trebNode.type='highshelf'; trebNode.frequency.value=3500; trebNode.gain.value=T;
-
-  // Two gain nodes — enough to amplify without extreme chain distortion
+  // ── PRE-GAIN: bring up the volume ─────────────────────────────────────────
   gainNodes=[ctx.createGain(), ctx.createGain()];
 
-  // Soft clipper — rounds off harsh peaks, keeps it punchy not blown out
-  const shaper=ctx.createWaveShaper();
-  shaper.curve=makeSoftClipCurve(6);
-  shaper.oversample='4x';
+  // ── EQ: cut harshness, boost body ─────────────────────────────────────────
+  // High-cut: roll off piercing highs above 12kHz that cause distortion
+  const hiCut=ctx.createBiquadFilter();
+  hiCut.type='lowpass'; hiCut.frequency.value=12000; hiCut.Q.value=0.5;
 
-  // Strong compressor — pumps the loudness without distortion
+  // Low-mid boost: 300-800Hz is where warmth/loudness lives
+  const midBoost=ctx.createBiquadFilter();
+  midBoost.type='peaking'; midBoost.frequency.value=500;
+  midBoost.Q.value=0.8; midBoost.gain.value=4;
+
+  // User bass control
+  bassNode=ctx.createBiquadFilter();
+  bassNode.type='lowshelf'; bassNode.frequency.value=220; bassNode.gain.value=B;
+
+  // User treble control (kept gentle)
+  trebNode=ctx.createBiquadFilter();
+  trebNode.type='highshelf'; trebNode.frequency.value=6000; trebNode.gain.value=T;
+
+  // ── LIMITER: tanh waveshaper — loudness without harsh clips ───────────────
+  const limiter=ctx.createWaveShaper();
+  limiter.curve=makeLimiterCurve();
+  limiter.oversample='4x';
+
+  // ── COMPRESSOR: glues everything, keeps it loud and punchy ────────────────
   compressor=ctx.createDynamicsCompressor();
-  compressor.threshold.value=-24;
-  compressor.knee.value=8;
-  compressor.ratio.value=12;
-  compressor.attack.value=0.003;
-  compressor.release.value=0.25;
+  compressor.threshold.value=-18;
+  compressor.knee.value=12;
+  compressor.ratio.value=8;
+  compressor.attack.value=0.005;
+  compressor.release.value=0.15;
 
-  // Chain: src → gain0 → gain1 → softclip → bass → treble → compressor → out
+  // ── FINAL MAKEUP GAIN: bring back level after compression ─────────────────
+  const makeupGain=ctx.createGain();
+  makeupGain.gain.value=2.5;
+
+  // Chain: src → g0 → g1 → hiCut → midBoost → bass → treble → limiter → comp → makeup → out
   src.connect(gainNodes[0]);
   gainNodes[0].connect(gainNodes[1]);
-  gainNodes[1].connect(shaper);
-  shaper.connect(bassNode);
+  gainNodes[1].connect(hiCut);
+  hiCut.connect(midBoost);
+  midBoost.connect(bassNode);
   bassNode.connect(trebNode);
-  trebNode.connect(compressor);
-  compressor.connect(ctx.destination);
+  trebNode.connect(limiter);
+  limiter.connect(compressor);
+  compressor.connect(makeupGain);
+  makeupGain.connect(ctx.destination);
 
   applyGain();
   chainBuilt=true;
@@ -243,7 +264,6 @@ function initAudio(){
 function applyGain(){
   if(!gainNodes.length)return;
   const total=calcGain(V);
-  // Split across 2 nodes
   const perNode=Math.pow(Math.max(total,0.0001),0.5);
   gainNodes.forEach(g=>g.gain.value=perNode);
 }
@@ -435,13 +455,12 @@ $('pname').addEventListener('keydown',e=>{ if(e.key==='Enter')doSave(); });
 $('modal').addEventListener('click',e=>{ if(e.target===$('modal'))skipSave(); });
 
 // ── GAIN CURVE ───────────────────────────────────────────────────────────────
-// 100%=1x  200%=3x  400%=8x  1000%=18x  5000%=60x  10000%=100x
-// Curve stays loud and punchy without turning into noise
+// 100%=1x  300%=4x  600%=9x  1000%=14x  5000%=35x  10000%=50x
+// Logarithmic — feels loud immediately, tapers off so it stays clean
 function calcGain(pct){
   if(pct===0) return 0;
   if(pct<=100) return pct/100;
-  // Log curve above 100% — jumps fast early, slows at extremes to avoid noise
-  return 1 + Math.log10(pct/100) * 17;
+  return 1 + Math.log(pct/100) * 6.5;
 }
 
 // ── SLIDERS ───────────────────────────────────────────────────────────────────
