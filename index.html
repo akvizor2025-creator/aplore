@@ -191,32 +191,51 @@ const audio=$('audio');
 let ctx=null,gainNodes=[],bassNode=null,trebNode=null,compressor=null,chainBuilt=false;
 let V=100,B=0,T=0;
 
+function makeSoftClipCurve(amount){
+  // Soft saturation curve — loud without harsh clipping
+  const n=256, curve=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    const x=(i*2/n)-1;
+    curve[i]= x*(1+amount)/(1+amount*Math.abs(x));
+  }
+  return curve;
+}
+
 function initAudio(){
   if(chainBuilt)return;
   ctx=new(window.AudioContext||window.webkitAudioContext)();
   const src=ctx.createMediaElementSource(audio);
+
   bassNode=ctx.createBiquadFilter();
   trebNode=ctx.createBiquadFilter();
   bassNode.type='lowshelf';  bassNode.frequency.value=220;  bassNode.gain.value=B;
   trebNode.type='highshelf'; trebNode.frequency.value=3500; trebNode.gain.value=T;
-  // 4 chained gain nodes — each multiplies the previous, breaks browser single-node cap
-  gainNodes=[ctx.createGain(),ctx.createGain(),ctx.createGain(),ctx.createGain()];
-  // Loose compressor — only catches true peaks to protect speakers
+
+  // Two gain nodes — enough to amplify without extreme chain distortion
+  gainNodes=[ctx.createGain(), ctx.createGain()];
+
+  // Soft clipper — rounds off harsh peaks, keeps it punchy not blown out
+  const shaper=ctx.createWaveShaper();
+  shaper.curve=makeSoftClipCurve(6);
+  shaper.oversample='4x';
+
+  // Strong compressor — pumps the loudness without distortion
   compressor=ctx.createDynamicsCompressor();
-  compressor.threshold.value=-3;
-  compressor.knee.value=30;
-  compressor.ratio.value=2;
-  compressor.attack.value=0.2;
-  compressor.release.value=0.5;
-  // Chain: src→g0→g1→g2→g3→bass→treble→compressor→out
+  compressor.threshold.value=-24;
+  compressor.knee.value=8;
+  compressor.ratio.value=12;
+  compressor.attack.value=0.003;
+  compressor.release.value=0.25;
+
+  // Chain: src → gain0 → gain1 → softclip → bass → treble → compressor → out
   src.connect(gainNodes[0]);
   gainNodes[0].connect(gainNodes[1]);
-  gainNodes[1].connect(gainNodes[2]);
-  gainNodes[2].connect(gainNodes[3]);
-  gainNodes[3].connect(bassNode);
+  gainNodes[1].connect(shaper);
+  shaper.connect(bassNode);
   bassNode.connect(trebNode);
   trebNode.connect(compressor);
   compressor.connect(ctx.destination);
+
   applyGain();
   chainBuilt=true;
 }
@@ -224,8 +243,8 @@ function initAudio(){
 function applyGain(){
   if(!gainNodes.length)return;
   const total=calcGain(V);
-  // Distribute across 4 nodes: each = total^(1/4)
-  const perNode=Math.pow(Math.max(total,0.0001),0.25);
+  // Split across 2 nodes
+  const perNode=Math.pow(Math.max(total,0.0001),0.5);
   gainNodes.forEach(g=>g.gain.value=perNode);
 }
 
@@ -415,12 +434,14 @@ dz.addEventListener('drop',e=>{ e.preventDefault(); dz.classList.remove('over');
 $('pname').addEventListener('keydown',e=>{ if(e.key==='Enter')doSave(); });
 $('modal').addEventListener('click',e=>{ if(e.target===$('modal'))skipSave(); });
 
-// ── GAIN CURVE — exponential so boost is FELT immediately ────────────────────
-// 100% = 1x (normal), 500% = 8x, 1000% = 25x, 5000% = 200x, 10000% = 500x
+// ── GAIN CURVE ───────────────────────────────────────────────────────────────
+// 100%=1x  200%=3x  400%=8x  1000%=18x  5000%=60x  10000%=100x
+// Curve stays loud and punchy without turning into noise
 function calcGain(pct){
   if(pct===0) return 0;
-  // exponential: gain = (pct/100)^2.2
-  return Math.pow(pct/100, 2.2);
+  if(pct<=100) return pct/100;
+  // Log curve above 100% — jumps fast early, slows at extremes to avoid noise
+  return 1 + Math.log10(pct/100) * 17;
 }
 
 // ── SLIDERS ───────────────────────────────────────────────────────────────────
